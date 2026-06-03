@@ -1,0 +1,22 @@
+name: Build and Deploy Application
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Application Code
+      uses: actions/checkout@v4
+
+    - name: Simulate Container Build
+      run: |
+        echo "Building Docker image using the template Dockerfile..."
+        docker build -t my-app:${{ github.sha }} .
+
+    - name: Simulate Deployment to Shared Infrastructure
+      run: |
+        echo "Connecting to Shared Infrastructure Registry..."
+        echo "Deploying app '${{ github.event.repository.name }}' successfully!"
