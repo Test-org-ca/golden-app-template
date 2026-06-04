@@ -1,22 +1,72 @@
-name: Build and Deploy Application
+name: Deploy Live to Amazon ECS
 
 on:
   push:
     branches: [ main ]
 
+env:
+  ECS_CLUSTER: shared-core-cluster
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout Application Code
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Simulate Container Build
-      run: |
-        echo "Building Docker image using the template Dockerfile..."
-        docker build -t my-app:${{ github.sha }} .
+    - name: Configure AWS Credentials via OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
 
-    - name: Simulate Deployment to Shared Infrastructure
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Create ECR Repository if missing
       run: |
-        echo "Connecting to Shared Infrastructure Registry..."
-        echo "Deploying app '${{ github.event.repository.name }}' successfully!"
+        aws ecr describe-repositories --repository-names ${{ github.event.repository.name }} || \
+        aws ecr create-repository --repository-name ${{ github.event.repository.name }}
+
+    - name: Build, Tag, and Push Image to ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ github.event.repository.name }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Register New Task Definition Version
+      id: render-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: app-container
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Create ECS Service if missing
+      run: |
+        aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ github.event.repository.name }}-service | grep -q "ACTIVE" || \
+        aws ecs create-service \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --service-name ${{ github.event.repository.name }}-service \
+          --task-definition ${{ steps.render-task-def.outputs.task-definition }} \
+          --desired-count 1 \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[${{ vars.AWS_SUBNETS }}],securityGroups=[${{ vars.AWS_SECURITY_GROUP }}],assignPublicIp=ENABLED}"
+
+    - name: Deploy Task Definition to live ECS Service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+        service: ${{ github.event.repository.name }}-service
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
