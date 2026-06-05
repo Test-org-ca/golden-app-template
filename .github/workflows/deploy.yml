@@ -18,7 +18,6 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # NEW STEP: Converts the GitHub repository name to strictly lowercase for AWS
     - name: Set Clean App Name
       id: app_name
       run: |
@@ -35,7 +34,6 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    # Uses the cleaned up environment variable instead of github.event.repository.name
     - name: Create ECR Repository if missing
       run: |
         aws ecr describe-repositories --repository-names ${{ env.APP_NAME }} || \
@@ -60,16 +58,26 @@ jobs:
         container-name: app-container
         image: ${{ steps.build-image.outputs.image }}
 
+    # FIXED STEP: Registers the file with AWS first to get a valid identifier
     - name: Create ECS Service if missing
       run: |
-        aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.APP_NAME }}-service | grep -q "ACTIVE" || \
-        aws ecs create-service \
-          --cluster ${{ env.ECS_CLUSTER }} \
-          --service-name ${{ env.APP_NAME }}-service \
-          --task-definition ${{ steps.render-task-def.outputs.task-definition }} \
-          --desired-count 1 \
-          --launch-type FARGATE \
-          --network-configuration "awsvpcConfiguration={subnets=[${{ vars.AWS_SUBNETS }}],securityGroups=[${{ vars.AWS_SECURITY_GROUP }}],assignPublicIp=ENABLED}"
+        if ! aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.APP_NAME }}-service | grep -q "ACTIVE"; then
+          echo "Service is missing. Registering task definition with AWS first..."
+          
+          # Register task definition file and grab the live ARN string
+          TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://${{ steps.render-task-def.outputs.task-definition }} --query "taskDefinition.taskDefinitionArn" --output text)
+          
+          echo "Creating ECS service using ARN: $TASK_DEF_ARN"
+          aws ecs create-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.APP_NAME }}-service \
+            --task-definition $TASK_DEF_ARN \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.AWS_SUBNETS }}],securityGroups=[${{ vars.AWS_SECURITY_GROUP }}],assignPublicIp=ENABLED}"
+        else
+          echo "Service already exists. Proceeding to standard rolling deployment."
+        fi
 
     - name: Deploy Task Definition to live ECS Service
       uses: aws-actions/amazon-ecs-deploy-task-definition@v2
