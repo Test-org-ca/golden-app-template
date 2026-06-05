@@ -57,6 +57,7 @@ jobs:
         task-definition: task-definition.json
         container-name: app-container
         image: ${{ steps.build-image.outputs.image }}
+        execution-role-arn: ${{ vars.AWS_ECS_EXECUTION_ROLE }}
 
     # FIXED STEP: Registers the file with AWS first to get a valid identifier
     - name: Create ECS Service if missing
