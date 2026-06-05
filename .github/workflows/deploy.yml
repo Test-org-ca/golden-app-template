@@ -18,6 +18,13 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
+    # NEW STEP: Converts the GitHub repository name to strictly lowercase for AWS
+    - name: Set Clean App Name
+      id: app_name
+      run: |
+        CLEAN_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+        echo "APP_NAME=$CLEAN_NAME" >> $GITHUB_ENV
+
     - name: Configure AWS Credentials via OIDC
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -28,16 +35,17 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
+    # Uses the cleaned up environment variable instead of github.event.repository.name
     - name: Create ECR Repository if missing
       run: |
-        aws ecr describe-repositories --repository-names ${{ github.event.repository.name }} || \
-        aws ecr create-repository --repository-name ${{ github.event.repository.name }}
+        aws ecr describe-repositories --repository-names ${{ env.APP_NAME }} || \
+        aws ecr create-repository --repository-name ${{ env.APP_NAME }}
 
     - name: Build, Tag, and Push Image to ECR
       id: build-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: ${{ github.event.repository.name }}
+        ECR_REPOSITORY: ${{ env.APP_NAME }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
@@ -54,10 +62,10 @@ jobs:
 
     - name: Create ECS Service if missing
       run: |
-        aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ github.event.repository.name }}-service | grep -q "ACTIVE" || \
+        aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.APP_NAME }}-service | grep -q "ACTIVE" || \
         aws ecs create-service \
           --cluster ${{ env.ECS_CLUSTER }} \
-          --service-name ${{ github.event.repository.name }}-service \
+          --service-name ${{ env.APP_NAME }}-service \
           --task-definition ${{ steps.render-task-def.outputs.task-definition }} \
           --desired-count 1 \
           --launch-type FARGATE \
@@ -67,6 +75,6 @@ jobs:
       uses: aws-actions/amazon-ecs-deploy-task-definition@v2
       with:
         task-definition: ${{ steps.render-task-def.outputs.task-definition }}
-        service: ${{ github.event.repository.name }}-service
+        service: ${{ env.APP_NAME }}-service
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
